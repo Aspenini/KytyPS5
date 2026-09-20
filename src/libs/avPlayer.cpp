@@ -1,6 +1,8 @@
 #include "common/common.h"
+#include "common/file.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
+#include "common/zarchive.h"
 #include "kernel/fileSystem.h"
 #include "kernel/pthread.h"
 #include "libs/audio.h"
@@ -15,6 +17,8 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <limits>
 #include <magic_enum.hpp>
 #include <memory>
 #include <mutex>
@@ -569,7 +573,7 @@ private:
 struct ReadyFrame {
 	std::unique_ptr<GuestBuffer> buffer;
 	AvPlayerFrameInfoEx          info {};
-	uint64_t                    timestamp_offset = 0;
+	uint64_t                     timestamp_offset = 0;
 };
 
 class FileStreamer {
@@ -644,6 +648,79 @@ private:
 	AVIOContext*            ctx    = nullptr;
 };
 
+class ArchiveFileStreamer {
+public:
+	~ArchiveFileStreamer() {
+		if (ctx != nullptr) {
+			avio_context_free(&ctx);
+		}
+	}
+	bool Init(const std::filesystem::path& path) {
+		if (!file.Open(path, Common::File::Mode::Read)) {
+			return false;
+		}
+		if (file.Size() > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+			return false;
+		}
+		auto* buf = static_cast<uint8_t*>(av_malloc(4096));
+		if (buf == nullptr) {
+			return false;
+		}
+		ctx = avio_alloc_context(buf, 4096, 0, this, Read, nullptr, Seek);
+		if (ctx == nullptr) {
+			av_free(buf);
+		}
+		return ctx != nullptr;
+	}
+	AVIOContext* Context() const { return ctx; }
+
+private:
+	static int Read(void* opaque, uint8_t* buf, int len) {
+		auto* source = static_cast<ArchiveFileStreamer*>(opaque);
+		if (source->file.IsEOF()) {
+			return AVERROR_EOF;
+		}
+		uint32_t read = 0;
+		source->file.Read(buf, static_cast<uint32_t>(len), &read);
+		return read == 0 ? AVERROR_EOF : static_cast<int>(read);
+	}
+	static int64_t Seek(void* opaque, int64_t offset, int whence) {
+		auto* source = static_cast<ArchiveFileStreamer*>(opaque);
+		if ((whence & AVSEEK_SIZE) != 0) {
+			return static_cast<int64_t>(source->file.Size());
+		}
+		whence &= ~AVSEEK_FORCE;
+
+		int64_t base = 0;
+		switch (whence) {
+			case SEEK_SET: break;
+			case SEEK_CUR: base = static_cast<int64_t>(source->file.Tell()); break;
+			case SEEK_END: base = static_cast<int64_t>(source->file.Size()); break;
+			default: return -1;
+		}
+		int64_t position = 0;
+		if (offset < 0) {
+			const auto distance = uint64_t {0} - static_cast<uint64_t>(offset);
+			if (static_cast<uint64_t>(base) < distance) {
+				return -1;
+			}
+			position = static_cast<int64_t>(static_cast<uint64_t>(base) - distance);
+		} else {
+			if (base > std::numeric_limits<int64_t>::max() - offset) {
+				return -1;
+			}
+			position = base + offset;
+		}
+		if (position < 0 || !source->file.Seek(static_cast<uint64_t>(position))) {
+			return -1;
+		}
+		return position;
+	}
+
+	Common::File file;
+	AVIOContext* ctx = nullptr;
+};
+
 class Source {
 public:
 	Source(AvPlayerMemAllocator m, AvPlayerFileReplacement f, AvPlayerEventReplacement e,
@@ -689,7 +766,17 @@ public:
 		} else {
 			auto real     = LibKernel::FileSystem::GetRealFilename(std::string(path.c_str()));
 			auto real_str = Common::PathToString(real);
-			if (auto rc = avformat_open_input(&raw, real_str.c_str(), nullptr, nullptr); rc < 0) {
+			if (Common::IsZArchivePath(real)) {
+				archive_streamer = std::make_unique<ArchiveFileStreamer>();
+				if (!archive_streamer->Init(real)) {
+					avformat_free_context(raw);
+					return AVPLAYER_ERROR_OPERATION_FAILED;
+				}
+				raw->pb = archive_streamer->Context();
+			}
+			const auto rc = avformat_open_input(
+			    &raw, archive_streamer != nullptr ? nullptr : real_str.c_str(), nullptr, nullptr);
+			if (rc < 0) {
 				LOGF("\t avformat_open_input failed: %s path=%s\n", fferr(rc).c_str(),
 				     real_str.c_str());
 				return AVPLAYER_ERROR_OPERATION_FAILED;
@@ -1019,6 +1106,7 @@ private:
 			avformat_close_input(&fmt);
 		}
 		streamer.reset();
+		archive_streamer.reset();
 	}
 	void ResetNoLock(bool retain_output_buffers = false) {
 		video_packets.Clear();
@@ -1644,6 +1732,7 @@ private:
 	AvPlayerSourceType                       source_type       = AvPlayerSourceUnknown;
 	std::string                              path;
 	std::unique_ptr<FileStreamer>            streamer;
+	std::unique_ptr<ArchiveFileStreamer>     archive_streamer;
 	AVFormatContext*                         fmt            = nullptr;
 	AVCodecContext*                          video_ctx      = nullptr;
 	AVCodecContext*                          audio_ctx      = nullptr;
@@ -1680,10 +1769,10 @@ private:
 	bool                                     paused                   = false;
 	bool                                     seek_video_frame_pending = false;
 	std::atomic_bool                         loop {false};
-	int32_t                                  trick_speed   = AVPLAYER_TRICK_SPEED_NORMAL;
-	uint32_t                                 sync_mode     = 0;
-	uint64_t                                 start_time_ms = 0;
-	uint64_t                                 last_audio_ts = 0;
+	int32_t                                  trick_speed             = AVPLAYER_TRICK_SPEED_NORMAL;
+	uint32_t                                 sync_mode               = 0;
+	uint64_t                                 start_time_ms           = 0;
+	uint64_t                                 last_audio_ts           = 0;
 	uint64_t                                 last_output_loop_offset = 0;
 	uint32_t                                 pending_loop_warnings   = 0;
 	std::chrono::steady_clock::time_point    clock_start {};

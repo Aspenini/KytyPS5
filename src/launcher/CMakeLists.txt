@@ -20,7 +20,7 @@ add_executable(launcher WIN32
 )
 
 
-target_link_libraries(launcher Qt6::Concurrent Qt6::Network Qt6::Widgets Vulkan::Headers SDL2-static kyty_git_version)
+target_link_libraries(launcher Qt6::Concurrent Qt6::Network Qt6::Widgets Vulkan::Headers SDL2-static kyty_git_version common)
 if(WIN32)
 target_link_libraries(launcher setupapi)
 endif()
@@ -51,7 +51,7 @@ endif()
 if(WIN32)
     find_program(QT_WINDEPLOYQT NAMES windeployqt PATHS "${Qt6_DIR}/../../../bin")
     if(NOT QT_WINDEPLOYQT)
-    	message(FATAL_ERROR "Could not find windeployqt")
+		message(FATAL_ERROR "Could not find windeployqt")
     endif()
 	add_custom_command(TARGET launcher POST_BUILD
 		COMMAND ${QT_WINDEPLOYQT} $<TARGET_FILE:launcher>
@@ -109,14 +109,14 @@ endif()
 
 if(WIN32)
     install(CODE "
-    		execute_process(
-    			COMMAND ${QT_WINDEPLOYQT} \"\${CMAKE_INSTALL_PREFIX}/${launcher_name}.exe\"
+			execute_process(
+				COMMAND ${QT_WINDEPLOYQT} \"\${CMAKE_INSTALL_PREFIX}/${launcher_name}.exe\"
 				--no-compiler-runtime
 				--no-system-d3d-compiler
 				--no-system-dxc-compiler
 				--no-opengl-sw
 				--no-translations
-    		)
+			)
     ")
 elseif(LINUX)
 	# Bundle the Qt runtime and plugins.

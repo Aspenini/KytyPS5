@@ -3,6 +3,7 @@
 #include "configuration.h"
 #include "configurationItem.h"
 #include "configurationListWidget.h"
+#include "gameContent.h"
 #include "patchesDialog.h"
 #include "updateChecker.h"
 
@@ -58,7 +59,7 @@ constexpr DWORD CMD_Y_CHARS = 1000;
 #endif
 constexpr char SETTINGS_MAIN_DIALOG[]        = "MainDialog";
 constexpr char SETTINGS_MAIN_LAST_GEOMETRY[] = "geometry";
-constexpr char SETTINGS_CHECK_UPDATES[]       = "check_updates_on_startup";
+constexpr char SETTINGS_CHECK_UPDATES[]      = "check_updates_on_startup";
 
 class MainDialogPrivate: public QObject {
 	Q_OBJECT
@@ -109,7 +110,7 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 	m_ui = new Ui::MainDialog;
 	m_ui->setupUi(main_dialog);
 
-	m_main_dialog = main_dialog;
+	m_main_dialog    = main_dialog;
 	m_update_checker = new UpdateChecker(main_dialog);
 	m_ui->check_updates_on_startup->setChecked(g_check_updates_on_startup);
 	m_ui->check_updates_link->setVisible(UpdateChecker::IsSupported());
@@ -506,7 +507,7 @@ void MainDialogPrivate::Update() {
 	if (run_enabled) {
 		const auto& info = item->GetInfo();
 		auto        dir  = info.basedir;
-		run_enabled      = !dir.isEmpty() && QDir(dir).exists();
+		run_enabled      = !dir.isEmpty() && (QDir(dir).exists() || GameContent::IsArchive(dir));
 	}
 
 	m_ui->widget->SetRunEnabled(run_enabled);

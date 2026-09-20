@@ -5,11 +5,13 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/virtualMemory.h"
+#include "common/zarchive.h"
 #include "emulator.h"
 #include "kytyGitVersion.h"
 
 #include <charconv>
 #include <cstdio>
+#include <filesystem>
 #include <fmt/format.h>
 #include <magic_enum.hpp>
 
@@ -38,9 +40,9 @@ static std::string GetBuildString() {
 
 static void PrintUsage() {
 	::printf("%s\n", GetBuildString().c_str());
-	::printf("kyty_emulator --game <dir|elf> [options]\n\n");
+	::printf("kyty_emulator --game <dir|elf|zar> [options]\n\n");
 	::printf("Options:\n");
-	::printf("  --game <dir|elf>                     Game directory or ELF to load.\n");
+	::printf("  --game <dir|elf|zar>                 Game directory, ELF, or ZArchive to load.\n");
 	::printf("  --game-patch <json>                  ETAHen cheat file.\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
 	::printf("  --screen-height <num>                Window height. Default: 720.\n");
@@ -48,7 +50,8 @@ static void PrintUsage() {
 	    "  --user-name <name>                   Local user name (1-16 bytes). Default: Kyty.\n");
 	::printf("  --user-id <num>                      Local user ID. Default: %d.\n",
 	         Config::DEFAULT_USER_ID);
-	::printf("  --mic <name>                        Capture from this microphone; omit for silence.\n");
+	::printf(
+	    "  --mic <name>                        Capture from this microphone; omit for silence.\n");
 	::printf(
 	    "  --present-mode <value>               Fifo, Mailbox, or Immediate. Default: Mailbox.\n");
 	::printf(
@@ -207,7 +210,17 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			}
 
 			value = Common::FixFilenameSlash(value);
-			if (Common::File::IsDirectoryExisting(value)) {
+			const auto extension =
+			    Common::ToLower(std::filesystem::path(value).extension().string());
+			if (extension == ".zar" && Common::File::IsFileExisting(value)) {
+				auto archive_root = Common::MakeZArchivePath(value);
+				if (!Common::File::IsFileExisting(archive_root / "eboot.bin")) {
+					::printf("ZArchive does not contain eboot.bin: %s\n", value.c_str());
+					return false;
+				}
+				options.app0_dir = archive_root;
+				options.elf      = "/app0/eboot.bin";
+			} else if (Common::File::IsDirectoryExisting(value)) {
 				options.app0_dir = value;
 				options.elf      = "/app0/eboot.bin";
 			} else if (Common::File::IsFileExisting(value)) {

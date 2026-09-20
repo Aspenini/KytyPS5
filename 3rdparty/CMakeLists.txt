@@ -28,6 +28,58 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(xbyak zydis)
 
+# ZArchive provides random-access reads for compressed game dumps. Build only
+# the reader/writer library and its zstd dependency; the command-line tool is
+# not part of KytyPS5's runtime distribution.
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
+set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+	zstd
+	GIT_REPOSITORY https://github.com/facebook/zstd.git
+	GIT_TAG v1.5.7
+	GIT_SHALLOW TRUE
+)
+FetchContent_Declare(
+	zarchive_source
+	GIT_REPOSITORY https://github.com/Exzap/ZArchive.git
+	GIT_TAG v0.1.2
+	GIT_SHALLOW TRUE
+)
+cmake_policy(PUSH)
+if(POLICY CMP0169)
+	cmake_policy(SET CMP0169 OLD)
+endif()
+FetchContent_GetProperties(zstd)
+if(NOT zstd_POPULATED)
+	FetchContent_Populate(zstd)
+	add_subdirectory("${zstd_SOURCE_DIR}/build/cmake" "${zstd_BINARY_DIR}" EXCLUDE_FROM_ALL)
+endif()
+FetchContent_GetProperties(zarchive_source)
+if(NOT zarchive_source_POPULATED)
+	FetchContent_Populate(zarchive_source)
+endif()
+cmake_policy(POP)
+
+add_library(zarchive STATIC
+	"${zarchive_source_SOURCE_DIR}/src/zarchivereader.cpp"
+	"${zarchive_source_SOURCE_DIR}/src/zarchivewriter.cpp"
+	"${zarchive_source_SOURCE_DIR}/src/sha_256.c"
+)
+add_library(ZArchive::zarchive ALIAS zarchive)
+target_include_directories(zarchive SYSTEM PUBLIC "${zarchive_source_SOURCE_DIR}/include")
+target_include_directories(zarchive PRIVATE "${zstd_SOURCE_DIR}/lib")
+target_link_libraries(zarchive PRIVATE libzstd_static)
+target_compile_features(zarchive PRIVATE cxx_std_20)
+if(MSVC)
+	target_compile_options(zarchive PRIVATE /W0)
+else()
+	target_compile_options(zarchive PRIVATE -w)
+endif()
+
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 add_subdirectory(SDL2)
 

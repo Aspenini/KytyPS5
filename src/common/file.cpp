@@ -5,6 +5,7 @@
 #include "common/platform/sysFileIO.h"
 #include "common/platform/sysTimer.h"
 #include "common/stringUtils.h"
+#include "common/zarchive.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -61,7 +62,8 @@ SysFileTimeStruct DateTimeToFileTimeUtc(const DateTime& date_time) {
 } // namespace
 
 struct File::FilePrivate {
-	sys_file_t* f;
+	sys_file_t*                   f;
+	std::unique_ptr<ZArchiveFile> archive;
 };
 
 File::File(): m_p(std::make_unique<FilePrivate>()) {
@@ -85,11 +87,15 @@ File::File(const std::filesystem::path& name, Mode mode): m_p(std::make_unique<F
 }
 
 bool File::IsInvalid() const {
-	return m_p->f == nullptr;
+	return m_p->f == nullptr && m_p->archive == nullptr;
 }
 
 bool File::Create(const std::filesystem::path& name) {
-	EXIT_IF(m_p->f != nullptr);
+	EXIT_IF(!IsInvalid());
+
+	if (IsZArchivePath(name)) {
+		return false;
+	}
 
 	m_file_name = name;
 
@@ -104,9 +110,16 @@ bool File::Create(const std::filesystem::path& name) {
 }
 
 bool File::Open(const std::filesystem::path& name, Mode mode) {
-	EXIT_IF(m_p->f != nullptr);
+	EXIT_IF(!IsInvalid());
 
 	m_file_name = name;
+	if (IsZArchivePath(name)) {
+		if (mode != Mode::Read) {
+			return false;
+		}
+		m_p->archive = OpenZArchiveFile(name);
+		return m_p->archive != nullptr;
+	}
 
 	switch (mode) {
 		case Mode::Read: m_p->f = SysFileOpenR(name); break;
@@ -124,7 +137,7 @@ bool File::Open(const std::filesystem::path& name, Mode mode) {
 }
 
 bool File::OpenInMem(void* buf, uint32_t buf_size) {
-	EXIT_IF(m_p->f != nullptr);
+	EXIT_IF(!IsInvalid());
 
 	m_p->f = SysFileOpen(static_cast<uint8_t*>(buf), buf_size);
 
@@ -137,7 +150,7 @@ bool File::OpenInMem(void* buf, uint32_t buf_size) {
 }
 
 bool File::CreateInMem() {
-	EXIT_IF(m_p->f != nullptr);
+	EXIT_IF(!IsInvalid());
 
 	m_p->f = SysFileCreate();
 
@@ -150,6 +163,7 @@ bool File::CreateInMem() {
 }
 
 void File::Close() {
+	m_p->archive.reset();
 	if (m_p->f != nullptr) {
 		SysFileClose(m_p->f);
 		m_p->f = nullptr;
@@ -157,7 +171,11 @@ void File::Close() {
 }
 
 uint64_t File::Size() const {
-	EXIT_IF(m_p->f == nullptr);
+	EXIT_IF(IsInvalid());
+
+	if (m_p->archive != nullptr) {
+		return m_p->archive->Size();
+	}
 
 	if (m_p->f == nullptr) {
 		return 0;
@@ -167,41 +185,67 @@ uint64_t File::Size() const {
 }
 
 uint64_t File::Remaining() const {
-	EXIT_IF(m_p->f == nullptr);
+	EXIT_IF(IsInvalid());
 
-	return Size() - Tell();
+	const auto size     = Size();
+	const auto position = Tell();
+	return position < size ? size - position : 0;
 }
 
 uint64_t File::Size(const std::filesystem::path& name) {
+	if (IsZArchivePath(name)) {
+		return ZArchiveFileSize(name);
+	}
 	return SysFileSize(name);
 }
 
 bool File::Seek(uint64_t offset) {
-	EXIT_IF(m_p->f == nullptr);
+	EXIT_IF(IsInvalid());
+
+	if (m_p->archive != nullptr) {
+		return m_p->archive->Seek(offset);
+	}
 
 	return SysFileSeek(*m_p->f, offset);
 }
 
 bool File::Truncate(uint64_t size) {
-	EXIT_IF(m_p->f == nullptr);
+	EXIT_IF(IsInvalid());
+
+	if (m_p->archive != nullptr) {
+		return false;
+	}
 
 	return SysFileTruncate(*m_p->f, size);
 }
 
 bool File::Unlink() {
-	EXIT_IF(m_p->f == nullptr);
+	EXIT_IF(IsInvalid());
+
+	if (m_p->archive != nullptr) {
+		return false;
+	}
 
 	return SysFileUnlink(*m_p->f, m_file_name);
 }
 
 uint64_t File::Tell() const {
-	EXIT_IF(m_p->f == nullptr);
+	EXIT_IF(IsInvalid());
+
+	if (m_p->archive != nullptr) {
+		return m_p->archive->Tell();
+	}
 
 	return SysFileTell(*m_p->f);
 }
 
 void File::Read(void* data, uint32_t size, uint32_t* bytes_read) {
-	EXIT_IF(m_p->f == nullptr);
+	EXIT_IF(IsInvalid());
+
+	if (m_p->archive != nullptr) {
+		m_p->archive->Read(data, size, bytes_read);
+		return;
+	}
 
 	if (m_p->f != nullptr) {
 		SysFileRead(data, size, *m_p->f, bytes_read);
@@ -209,7 +253,14 @@ void File::Read(void* data, uint32_t size, uint32_t* bytes_read) {
 }
 
 void File::Write(const void* data, uint32_t size, uint32_t* bytes_written) {
-	EXIT_IF(m_p->f == nullptr);
+	EXIT_IF(IsInvalid());
+
+	if (m_p->archive != nullptr) {
+		if (bytes_written != nullptr) {
+			*bytes_written = 0;
+		}
+		return;
+	}
 
 	SysFileWrite(data, size, *m_p->f, bytes_written);
 }
@@ -246,30 +297,45 @@ void File::Printf(const char* format, ...) {
 }
 
 bool File::IsDirectoryExisting(const std::filesystem::path& path) {
+	if (IsZArchivePath(path)) {
+		return IsZArchiveDirectory(path);
+	}
 	auto path_str = PathToGenericString(path);
 	return SysFileIsDirectoryExisting(path_str.ends_with("/") ? Common::RemoveLast(path_str, 1)
 	                                                          : path_str);
 }
 
 bool File::IsFileExisting(const std::filesystem::path& name) {
+	if (IsZArchivePath(name)) {
+		return IsZArchiveFile(name);
+	}
 	return SysFileIsFileExisting(name);
 }
 
 bool File::CreateDirectory(
     const std::filesystem::path& path) // @suppress("Member declaration not found")
 {
+	if (IsZArchivePath(path)) {
+		return false;
+	}
 	auto path_str = PathToGenericString(path);
 	return SysFileCreateDirectory(path_str.ends_with("/") ? Common::RemoveLast(path_str, 1)
 	                                                      : path_str);
 }
 
 bool File::DeleteDirectory(const std::filesystem::path& path) {
+	if (IsZArchivePath(path)) {
+		return false;
+	}
 	auto path_str = PathToGenericString(path);
 	return SysFileDeleteDirectory(path_str.ends_with("/") ? Common::RemoveLast(path_str, 1)
 	                                                      : path_str);
 }
 
 bool File::CreateDirectories(const std::filesystem::path& path) {
+	if (IsZArchivePath(path)) {
+		return false;
+	}
 	std::string real_path = Common::ReplaceChar(PathToGenericString(path), '\\', '/');
 
 	std::vector<std::string> list = Common::Split(real_path, "/");
@@ -299,6 +365,9 @@ bool File::CreateDirectories(const std::filesystem::path& path) {
 }
 
 bool File::DeleteDirectories(const std::filesystem::path& path) {
+	if (IsZArchivePath(path)) {
+		return false;
+	}
 	std::string real_path = Common::ReplaceChar(PathToGenericString(path), '\\', '/');
 
 	std::vector<std::string> list = Common::Split(real_path, "/");
@@ -332,11 +401,18 @@ bool File::DeleteDirectories(const std::filesystem::path& path) {
 bool File::DeleteFile(
     const std::filesystem::path& name) // @suppress("Member declaration not found")
 {
+	if (IsZArchivePath(name)) {
+		return false;
+	}
 	return SysFileDeleteFile(name);
 }
 
 bool File::Flush() {
-	EXIT_IF(m_p->f == nullptr);
+	EXIT_IF(IsInvalid());
+
+	if (m_p->archive != nullptr) {
+		return true;
+	}
 
 	return SysFileFlush(*m_p->f);
 }
@@ -349,7 +425,7 @@ std::vector<std::byte> File::ReadWholeBuffer() {
 
 	EXIT_IF((s >> 32u) != 0);
 
-	const auto            read_size = static_cast<uint32_t>(s);
+	const auto             read_size = static_cast<uint32_t>(s);
 	std::vector<std::byte> buf(read_size);
 
 	Read(buf.data(), read_size);
@@ -358,6 +434,9 @@ std::vector<std::byte> File::ReadWholeBuffer() {
 }
 
 DateTime File::GetLastAccessTimeUTC(const std::filesystem::path& name) {
+	if (IsZArchivePath(name)) {
+		return GetLastAccessTimeUTC(GetZArchiveHostPath(name));
+	}
 	SysTimeStruct t {};
 	SysFileToSystemTimeUtc(SysFileGetLastAccessTimeUtc(name), t);
 
@@ -369,6 +448,9 @@ DateTime File::GetLastAccessTimeUTC(const std::filesystem::path& name) {
 }
 
 DateTime File::GetLastWriteTimeUTC(const std::filesystem::path& name) {
+	if (IsZArchivePath(name)) {
+		return GetLastWriteTimeUTC(GetZArchiveHostPath(name));
+	}
 	SysTimeStruct t {};
 	SysFileToSystemTimeUtc(SysFileGetLastWriteTimeUtc(name), t);
 
@@ -383,6 +465,10 @@ void File::GetLastAccessAndWriteTimeUTC(const std::filesystem::path& name, DateT
                                         DateTime* write) {
 	EXIT_IF(access == nullptr);
 	EXIT_IF(write == nullptr);
+	if (IsZArchivePath(name)) {
+		GetLastAccessAndWriteTimeUTC(GetZArchiveHostPath(name), access, write);
+		return;
+	}
 
 	SysTimeStruct     at {};
 	SysTimeStruct     wt {};
@@ -409,7 +495,12 @@ void File::GetLastAccessAndWriteTimeUTC(DateTime* access, DateTime* write) {
 	EXIT_IF(access == nullptr);
 	EXIT_IF(write == nullptr);
 
-	EXIT_IF(m_p->f == nullptr);
+	EXIT_IF(IsInvalid());
+
+	if (m_p->archive != nullptr) {
+		GetLastAccessAndWriteTimeUTC(m_p->archive->ArchivePath(), access, write);
+		return;
+	}
 
 	if (m_p->f == nullptr) {
 		*access = DateTime();
@@ -439,23 +530,35 @@ void File::GetLastAccessAndWriteTimeUTC(DateTime* access, DateTime* write) {
 }
 
 bool File::SetLastAccessTimeUTC(const std::filesystem::path& name, const DateTime& dt) {
+	if (IsZArchivePath(name)) {
+		return false;
+	}
 	auto f = DateTimeToFileTimeUtc(dt);
 	return SysFileSetLastAccessTimeUtc(name, f);
 }
 
 bool File::SetLastWriteTimeUTC(const std::filesystem::path& name, const DateTime& dt) {
+	if (IsZArchivePath(name)) {
+		return false;
+	}
 	auto f = DateTimeToFileTimeUtc(dt);
 	return SysFileSetLastWriteTimeUtc(name, f);
 }
 
 bool File::SetLastAccessAndWriteTimeUTC(const std::filesystem::path& name, const DateTime& access,
                                         const DateTime& write) {
+	if (IsZArchivePath(name)) {
+		return false;
+	}
 	auto af = DateTimeToFileTimeUtc(access);
 	auto wf = DateTimeToFileTimeUtc(write);
 	return SysFileSetLastAccessAndWriteTimeUtc(name, af, wf);
 }
 
 std::vector<File::FindInfo> File::FindFiles(const std::filesystem::path& path) {
+	if (IsZArchivePath(path)) {
+		return {};
+	}
 	std::vector<sys_file_find_t> files;
 
 	SysFileFindFiles(path, files);
@@ -501,6 +604,13 @@ std::vector<File::FindInfo> File::FindFiles(const std::filesystem::path& path) {
 }
 
 std::vector<File::DirEntry> File::GetDirEntries(const std::filesystem::path& path) {
+	if (IsZArchivePath(path)) {
+		std::vector<File::DirEntry> ret;
+		for (auto& entry: GetZArchiveDirEntries(path)) {
+			ret.push_back({std::move(entry.name), entry.is_file});
+		}
+		return ret;
+	}
 	std::vector<sys_dir_entry_t> files;
 
 	SysFileGetDents(path, files);
@@ -523,12 +633,18 @@ std::vector<File::DirEntry> File::GetDirEntries(const std::filesystem::path& pat
 bool File::CopyFile(const std::filesystem::path& src,
                     const std::filesystem::path& dst) // @suppress("Member declaration not found")
 {
+	if (IsZArchivePath(src) || IsZArchivePath(dst)) {
+		return false;
+	}
 	return SysFileCopyFile(src, dst);
 }
 
 bool File::RenameFile(const std::filesystem::path& src,
                       const std::filesystem::path& dst) // @suppress("Member declaration not found")
 {
+	if (IsZArchivePath(src) || IsZArchivePath(dst)) {
+		return false;
+	}
 	if (IsFileExisting(dst)) {
 		DeleteFile(dst); // @suppress("Invalid arguments")
 	}
@@ -537,6 +653,9 @@ bool File::RenameFile(const std::filesystem::path& src,
 }
 
 void File::RemoveReadonly(const std::filesystem::path& name) {
+	if (IsZArchivePath(name)) {
+		return;
+	}
 	SysFileRemoveReadonly(name);
 }
 

@@ -1,13 +1,13 @@
 #include "trophyViewerDialog.h"
 
 #include "configuration.h"
+#include "gameContent.h"
 
 #include <QAbstractItemView>
 #include <QBrush>
 #include <QByteArray>
 #include <QDialogButtonBox>
 #include <QDir>
-#include <QFile>
 #include <QFileInfo>
 #include <QFont>
 #include <QHeaderView>
@@ -99,13 +99,12 @@ static QString ReadFixedString(const QByteArray& data, qsizetype offset, qsizety
 }
 
 static bool ReadUcp(const QString& file_name, QMap<QString, QByteArray>& files, QString& error) {
-	QFile file(file_name);
-	if (!file.open(QIODevice::ReadOnly)) {
+	const QByteArray data = GameContent::ReadPath(GameContent::ToPath(file_name));
+	if (data.isEmpty()) {
 		error = QObject::tr("Could not open %1").arg(QDir::toNativeSeparators(file_name));
 		return false;
 	}
 
-	const QByteArray data = file.readAll();
 	if (data.size() < UCP_HEADER_LEN) {
 		error = QObject::tr("%1 is too small to be a trophy package.")
 		            .arg(QFileInfo(file_name).fileName());
@@ -392,30 +391,45 @@ static QStringList FindTrophyFiles(const Configuration* info) {
 		return {};
 	}
 
-	const QDir trophy_dir(QDir(info->basedir).filePath(QStringLiteral("sce_sys/trophy2")));
-	if (!trophy_dir.exists()) {
-		return {};
+	QStringList files;
+	if (GameContent::IsArchive(info->basedir)) {
+		static const QRegularExpression trophy_file_re(QStringLiteral("^trophy.*\\.ucp$"),
+		                                               QRegularExpression::CaseInsensitiveOption);
+		for (const auto& file:
+		     GameContent::ListFiles(info->basedir, QStringLiteral("sce_sys/trophy2"))) {
+			if (trophy_file_re.match(QFileInfo(file).fileName()).hasMatch()) {
+				files.append(file);
+			}
+		}
+		files.sort(Qt::CaseInsensitive);
+	} else {
+		const QDir trophy_dir(QDir(info->basedir).filePath(QStringLiteral("sce_sys/trophy2")));
+		if (!trophy_dir.exists()) {
+			return {};
+		}
+		const auto entries =
+		    trophy_dir.entryInfoList({QStringLiteral("Trophy*.ucp"), QStringLiteral("trophy*.ucp")},
+		                             QDir::Files | QDir::NoSymLinks, QDir::Name | QDir::IgnoreCase);
+		for (const auto& entry: entries) {
+			files.append(entry.absoluteFilePath());
+		}
 	}
-
-	const auto files =
-	    trophy_dir.entryInfoList({QStringLiteral("Trophy*.ucp"), QStringLiteral("trophy*.ucp")},
-	                             QDir::Files | QDir::NoSymLinks, QDir::Name | QDir::IgnoreCase);
 
 	QStringList   trophy_files;
 	QSet<QString> seen;
 	for (const auto& file: files) {
-		auto key = file.canonicalFilePath();
+		auto key =
+		    GameContent::IsArchive(info->basedir) ? file : QFileInfo(file).canonicalFilePath();
 		if (key.isEmpty()) {
-			key = file.absoluteFilePath();
+			key = file;
 		}
 		key = QDir::cleanPath(key).toCaseFolded();
 
 		if (!seen.contains(key)) {
 			seen.insert(key);
-			trophy_files.append(file.absoluteFilePath());
+			trophy_files.append(file);
 		}
 	}
-
 	return trophy_files;
 }
 

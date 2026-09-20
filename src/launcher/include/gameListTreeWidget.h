@@ -1,6 +1,7 @@
 #ifndef GAME_LIST_TREE_WIDGET_H
 #define GAME_LIST_TREE_WIDGET_H
 
+#include <QByteArray>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPalette>
@@ -17,14 +18,14 @@ public:
 		viewport()->setAutoFillBackground(false);
 	}
 
-	void SetBackgroundImage(const QString& path) {
-		if (m_path == path) {
+	void SetBackgroundImage(const QString& key, const QByteArray& data = {}) {
+		if (m_path == key) {
 			return;
 		}
-		m_path   = path;
+		m_path   = key;
 		m_source = QPixmap();
-		if (!path.isEmpty()) {
-			m_source.load(path);
+		if (!data.isEmpty()) {
+			m_source.loadFromData(data);
 		}
 		UpdateScaledBackground();
 		viewport()->update();

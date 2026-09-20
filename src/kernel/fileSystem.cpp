@@ -9,6 +9,7 @@
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
+#include "common/zarchive.h"
 #include "kernel/memory.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
@@ -59,18 +60,18 @@ private:
 };
 
 struct File {
-	Common::File                        f;
-	std::string                         name;
-	std::filesystem::path               real_name;
-	std::atomic_bool                    opened;
-	std::atomic_bool                    directory;
-	std::atomic_bool                    writable;
-	std::atomic_bool                    append;
-	std::atomic_bool                    sync_writes;
-	SpecialFile                         special;
-	Common::Mutex                       mutex;
-	std::vector<uint8_t>                dirents;
-	uint64_t                            dents_offset;
+	Common::File          f;
+	std::string           name;
+	std::filesystem::path real_name;
+	std::atomic_bool      opened;
+	std::atomic_bool      directory;
+	std::atomic_bool      writable;
+	std::atomic_bool      append;
+	std::atomic_bool      sync_writes;
+	SpecialFile           special;
+	Common::Mutex         mutex;
+	std::vector<uint8_t>  dirents;
+	uint64_t              dents_offset;
 };
 
 class FileDescriptors {
@@ -257,7 +258,15 @@ void MountPoints::Mount(const std::filesystem::path& folder, const std::string& 
 	Umount(point_str);
 
 	MountPair p;
-	p.dir   = folder_str;
+	if (Common::IsZArchivePath(folder)) {
+		p.dir            = folder;
+		const auto slash = std::filesystem::path("/").native();
+		if (!p.dir.native().ends_with(slash)) {
+			p.dir += slash;
+		}
+	} else {
+		p.dir = folder_str;
+	}
 	p.point = point_str;
 
 	m_mount_pairs.push_back(p);
@@ -343,10 +352,12 @@ std::filesystem::path MountPoints::ResolvePath(const std::string& mounted_name) 
 		while (rel_path.starts_with('/')) {
 			rel_path = Common::RemoveFirst(rel_path, 1);
 		}
+		if (Common::IsZArchivePath(p.dir)) {
+			return p.dir / std::filesystem::u8path(rel_path);
+		}
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		if (HasWindowsForbiddenFilenameCharacter(rel_path)) {
-			::printf("FileSystem: Windows-incompatible guest filename: %s\n",
-			         mounted_name.c_str());
+			::printf("FileSystem: Windows-incompatible guest filename: %s\n", mounted_name.c_str());
 		}
 		return p.dir / rel_path;
 #else
@@ -456,6 +467,11 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 	}
 
 	file->real_name = g_mount_points->ResolvePath(file->name);
+	if (Common::IsZArchivePath(file->real_name) &&
+	    (rw_mode != Common::File::Mode::Read || trunc || creat)) {
+		g_files->DeleteDescriptor(descriptor);
+		return KERNEL_ERROR_EROFS;
+	}
 
 	if (trunc && rw_mode == Common::File::Mode::Read) {
 		g_files->DeleteDescriptor(descriptor);
@@ -1046,6 +1062,9 @@ int KYTY_SYSV_ABI KernelUnlink(const char* path) {
 	}
 
 	auto real_file_name = g_mount_points->ResolvePath(path);
+	if (Common::IsZArchivePath(real_file_name)) {
+		return KERNEL_ERROR_EROFS;
+	}
 
 	bool is_dir  = Common::File::IsDirectoryExisting(real_file_name);
 	bool is_file = Common::File::IsFileExisting(real_file_name);
@@ -1083,6 +1102,9 @@ int KYTY_SYSV_ABI KernelRename(const char* from, const char* to) {
 	auto to_path   = std::string(to);
 	auto real_from = g_mount_points->ResolvePath(from_path);
 	auto real_to   = g_mount_points->ResolvePath(to_path);
+	if (Common::IsZArchivePath(real_from) || Common::IsZArchivePath(real_to)) {
+		return KERNEL_ERROR_EROFS;
+	}
 
 	if (!Common::File::IsFileExisting(real_from)) {
 		return KERNEL_ERROR_ENOENT;
@@ -1164,6 +1186,9 @@ int KYTY_SYSV_ABI KernelMkdir(const char* path, uint16_t mode) {
 	     path, mode);
 
 	auto real_name = g_mount_points->ResolvePath(std::string(path));
+	if (Common::IsZArchivePath(real_name)) {
+		return KERNEL_ERROR_EROFS;
+	}
 
 	if (Common::File::IsDirectoryExisting(real_name)) {
 		return KERNEL_ERROR_EEXIST;
@@ -1190,6 +1215,9 @@ int KYTY_SYSV_ABI KernelRmdir(const char* path) {
 	LOGF("\t path = %s\n", path);
 
 	auto real_name = g_mount_points->ResolvePath(std::string(path));
+	if (Common::IsZArchivePath(real_name)) {
+		return KERNEL_ERROR_EROFS;
+	}
 
 	if (!Common::File::IsDirectoryExisting(real_name)) {
 		return KERNEL_ERROR_ENOENT;

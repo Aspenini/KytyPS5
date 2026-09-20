@@ -1,6 +1,7 @@
 #include "configurationItem.h"
 
 #include "configuration.h"
+#include "gameContent.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -14,6 +15,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QPixmap>
 #include <QSize>
 #include <QStringList>
 #include <QStyle>
@@ -170,7 +172,14 @@ ConfigurationItem::ConfigurationItem(std::unique_ptr<Configuration> info, QTreeW
 		watcher->deleteLater();
 	});
 	watcher->setFuture(QtConcurrent::run([path = m_info->basedir]() -> qint64 {
-		if (path.isEmpty() || !QDir(path).exists()) {
+		if (path.isEmpty()) {
+			return -1;
+		}
+		const QFileInfo info(path);
+		if (GameContent::IsArchive(path)) {
+			return info.size();
+		}
+		if (!QDir(path).exists()) {
 			return -1;
 		}
 		qint64       bytes = 0;
@@ -267,9 +276,11 @@ void ConfigurationItem::SetCompatibilityEditable(bool editable) {
 }
 
 void ConfigurationItem::UpdateIcon() {
-	const QString icon_file = QDir(m_info->basedir).filePath(QStringLiteral("sce_sys/icon0.png"));
-	if (QFileInfo::exists(icon_file)) {
-		setIcon(NameColumn, QIcon(icon_file));
+	const auto icon_data =
+	    GameContent::ReadFile(m_info->basedir, QStringLiteral("sce_sys/icon0.png"));
+	QPixmap icon;
+	if (!icon_data.isEmpty() && icon.loadFromData(icon_data)) {
+		setIcon(NameColumn, QIcon(icon));
 		return;
 	}
 
