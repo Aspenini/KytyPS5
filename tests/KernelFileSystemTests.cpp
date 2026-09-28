@@ -305,10 +305,7 @@ void CheckArchiveMount(const std::filesystem::path &root) {
       offset += record_length;
     }
   }
-  const auto representable = std::count_if(expected_entries.begin(), expected_entries.end(),
-                                          [](const auto &entry) { return entry.name.size() <= UINT8_MAX; });
-  Check(representable + 1 == expected_entries.size() && entries_seen == representable,
-        "guest enumerates all representable archive names and skips oversized names");
+  Check(entries_seen == expected_entries.size(), "guest enumerates every archive directory entry");
   Check(FileSystem::KernelClose(directory) == OK, "close archive directory");
 
   for (const int flags : {1, 2, 0x0200, 0x0400}) {

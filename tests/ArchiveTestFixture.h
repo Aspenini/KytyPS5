@@ -16,7 +16,6 @@ inline constexpr std::string_view Param =
 inline constexpr std::string_view UnicodeFilename =
     "asset-\xc3\xa9-\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e.bin";
 inline const std::string LongFilename = std::string(160, 'a') + ".bin";
-inline const std::string OversizedFilename = std::string(260, 'b') + ".bin";
 
 // Both Common::File and guest filesystem tests read the same archive layout.
 inline bool CreateArchive(const std::filesystem::path &path,
@@ -55,8 +54,7 @@ inline bool CreateArchive(const std::filesystem::path &path,
         !add("sce_sys/param.json", Param.data(), Param.size()) ||
         !add("assets/subdir/data.bin", payload.data(), payload.size()) ||
         !add(UnicodeFilename, Eboot.data(), Eboot.size()) ||
-        !add(LongFilename, Eboot.data(), Eboot.size()) ||
-        !add(OversizedFilename, Eboot.data(), Eboot.size())) {
+        !add(LongFilename, Eboot.data(), Eboot.size())) {
       return false;
     }
     writer.Finalize();

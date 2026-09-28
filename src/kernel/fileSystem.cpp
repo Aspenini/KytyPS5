@@ -129,9 +129,7 @@ static std::vector<uint8_t> PackDirents(const std::vector<Common::File::DirEntry
 	uint64_t             last_reclen_offset = 0;
 	for (const auto& entry: entries) {
 		const auto& name = entry.name;
-		if (name.size() > UINT8_MAX) {
-			continue;
-		}
+		EXIT_NOT_IMPLEMENTED(name.size() > 255);
 		const auto reclen = AlignUp(8 + name.size() + 1, 4);
 		if (offset + reclen > dirents.size()) {
 			if (!dirents.empty()) {

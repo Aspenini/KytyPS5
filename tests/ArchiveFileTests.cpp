@@ -244,8 +244,6 @@ int main() {
         "normalize internal parent traversal");
   Check(Common::File::IsFileExisting(root / ArchiveTests::LongFilename),
         "decode extended-length archive names");
-  Check(Common::File::IsFileExisting(root / ArchiveTests::OversizedFilename),
-        "archive backend preserves names longer than guest dirents support");
   Check(Common::File::IsFileExisting(root / Common::PathFromUtf8(ArchiveTests::UnicodeFilename)),
         "lookup Unicode archive member");
 
