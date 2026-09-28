@@ -682,7 +682,7 @@ void CheckSocketWakeup() {
 
 } // namespace
 
-int main() {
+int main(int, char**) {
   Common::InitializeThreads();
   Common::Subsystems subsystems;
   subsystems.Initialize<Config::Lifecycle>();
